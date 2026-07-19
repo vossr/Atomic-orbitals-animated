@@ -13,6 +13,7 @@
   const N0 = 100000;          // starting ball count; the UI slider changes it
   const R_WORLD = 2.0;        // the cloud is scaled to roughly this radius
   const Q0 = { n: 3, l: 1, m: 0 };
+  const P0 = { solid: false, h: 205, s: 0.72, l: 0.55 };
 
   // Blackbody ramp, following the reference shader: cold red through to a hot
   // near-white. `i` runs 0..1.
@@ -24,6 +25,53 @@
       out[c] = 1 - Math.exp(-5e8 / w);
     }
     return out;
+  }
+
+  /**
+   * HSL to linear RGB. h in degrees, s and l in 0..1. The shader's colors are
+   * linear (the composite pass gammas on the way out), but the slider values
+   * are picked by eye, so undo sRGB's curve on the way in — otherwise every
+   * choice lands washed out.
+   */
+  function hslToLinear(h, s, l, out) {
+    const c = (1 - Math.abs(2 * l - 1)) * s;
+    const hp = ((h % 360) + 360) % 360 / 60;
+    const x = c * (1 - Math.abs((hp % 2) - 1));
+    const m = l - c / 2;
+    const seg = [[c, x, 0], [x, c, 0], [0, c, x], [0, x, c], [x, 0, c], [c, 0, x]];
+    const rgb = seg[Math.floor(hp) % 6];
+    for (let i = 0; i < 3; i++) out[i] = Math.pow(rgb[i] + m, 2.2);
+    return out;
+  }
+
+  /**
+   * Fills a cloud's color buffer from its per-ball tone (0..1, how dense the
+   * neighbourhood is) and sign (which lobe). Split out from buildCloud so the
+   * palette can change without resampling a million points.
+   */
+  function paint(cloud, palette) {
+    const { colors, tone, sign } = cloud;
+    const rgb = [0, 0, 0];
+
+    if (palette.solid) {
+      hslToLinear(palette.h, palette.s, palette.l, rgb);
+      for (let k = 0; k < colors.length; k += 3) {
+        colors[k] = rgb[0]; colors[k + 1] = rgb[1]; colors[k + 2] = rgb[2];
+      }
+      return colors;
+    }
+
+    for (let i = 0; i < tone.length; i++) {
+      const k = i * 3;
+      blackbody(tone[i], rgb);
+      if (sign[i] >= 0) {
+        colors[k] = rgb[0]; colors[k + 1] = rgb[1]; colors[k + 2] = rgb[2];
+      } else {
+        // Same ramp read cold: swap the red and blue ends.
+        colors[k] = rgb[2] * 0.9; colors[k + 1] = rgb[1] * 0.95; colors[k + 2] = rgb[0];
+      }
+    }
+    return colors;
   }
 
   /**
@@ -39,15 +87,16 @@
    * y and z would do it too, but it mirrors the scene and would flip the
    * handedness of the m < 0 lobes.
    */
-  function buildCloud(count, q) {
+  function buildCloud(count, q, palette) {
     const s = Orbital.sampler(q.n, q.l, q.m);
 
     const positions = new Float32Array(count * 3);
     const radii = new Float32Array(count);
     const colors = new Float32Array(count * 3);
+    const tone = new Float32Array(count);
+    const sign = new Int8Array(count);
 
     const scale = R_WORLD / s.rOuter;
-    const rgb = [0, 0, 0];
 
     for (let i = 0; i < count; i++) {
       const k = i * 3;
@@ -62,19 +111,15 @@
 
       // Brightness tracks how dense this point's neighbourhood is; hue splits
       // the lobes by the sign of psi, which is the structure you actually want
-      // to read off an orbital.
+      // to read off an orbital. paint() turns the pair into a color.
       const p = s.psi(x, y, z);
-      const t = Math.pow(Math.min(1, (p * p) / s.maxDensity), 1 / 2.2);
-      blackbody(t, rgb);
-      if (p >= 0) {
-        colors[k] = rgb[0]; colors[k + 1] = rgb[1]; colors[k + 2] = rgb[2];
-      } else {
-        // Same ramp read cold: swap the red and blue ends.
-        colors[k] = rgb[2] * 0.9; colors[k + 1] = rgb[1] * 0.95; colors[k + 2] = rgb[0];
-      }
+      tone[i] = Math.pow(Math.min(1, (p * p) / s.maxDensity), 1 / 2.2);
+      sign[i] = p >= 0 ? 1 : -1;
     }
 
-    return { positions, radii, colors };
+    const cloud = { positions, radii, colors, tone, sign };
+    paint(cloud, palette);
+    return cloud;
   }
 
   function main() {
@@ -82,9 +127,18 @@
 
     let count = N0;
     let q = Orbital.clampQuantum(Q0.n, Q0.l, Q0.m);
+    const palette = Object.assign({}, P0);
+    let cloud;
 
     function rebuild() {
-      view.setSpheres(buildCloud(count, q));   // old buffers fall out of scope
+      cloud = buildCloud(count, q, palette);   // old buffers fall out of scope
+      view.setSpheres(cloud);
+    }
+
+    // Palette-only changes reuse the sampled cloud, so dragging a hue slider
+    // costs one buffer upload rather than a million rejection samples.
+    function repaint() {
+      view.updateColors(paint(cloud, palette));
     }
 
     rebuild();
@@ -100,8 +154,10 @@
 
     AtomicOrbitalsUI.attach(view, {
       quantum: q,
+      palette: palette,
       onCount: (v) => { count = v; rebuild(); },
       onQuantum: (next) => { q = next; rebuild(); },
+      onPalette: (next) => { Object.assign(palette, next); repaint(); },
     });
     view.start();
   }

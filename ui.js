@@ -73,6 +73,16 @@
   .aoui-check input {
     width: 12px; height: 12px; margin: 0; accent-color: #74a8ff; cursor: pointer;
   }
+  /* The native color input draws a chunky bordered box; strip it back to a
+     flat bar that matches the sliders it sits under. */
+  .aoui input[type=color] {
+    width: 100%; height: 14px; padding: 0; cursor: pointer;
+    background: transparent; border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 2px; -webkit-appearance: none; appearance: none;
+  }
+  .aoui input[type=color]::-webkit-color-swatch-wrapper { padding: 0; }
+  .aoui input[type=color]::-webkit-color-swatch { border: 0; border-radius: 1px; }
+  .aoui input[type=color]::-moz-color-swatch { border: 0; border-radius: 1px; }
   `;
 
   function el(tag, cls, parent) {
@@ -111,7 +121,7 @@
     function slider(name, min, max, step, value, onInput, cfg) {
       cfg = cfg || {};
       const fmt = cfg.fmt || ((v) => v.toFixed(step < 0.01 ? 3 : 2));
-      const row = el('div', 'aoui-row', panel);
+      const row = el('div', 'aoui-row', cfg.parent || panel);
       const label = el('label', null, row);
       label.appendChild(document.createTextNode(name));
       const out = el('i', null, label);
@@ -215,6 +225,70 @@
     slider('ao radius', 0.01, 5.0, 0.01, s.ao.radius, (v) => view.setAO({ radius: v }));
     slider('ao intensity', 0, 5, 0.05, s.ao.intensity, (v) => view.setAO({ intensity: v }));
     slider('supersample', 1, 8, 0.5, s.superSample, (v) => view.setQuality({ superSample: v }));
+    slider('roughness', 0, 1, 0.01, s.roughness, (v) => view.setMaterial({ roughness: v }));
+
+    // --- color ------------------------------------------------------------
+    //
+    // Either the blackbody ramp — brightness by probability density, warm and
+    // cold ends splitting the lobes by the sign of psi — or one flat color, in
+    // which case the three sliders below choose it and the orbital's structure
+    // has to be read off the geometry alone.
+    const modeLabel = title('Color', true);
+    const p0 = opts.palette || { solid: false, h: 205, s: 0.72, l: 0.55 };
+
+    function pushPalette(next) {
+      if (opts.onPalette) opts.onPalette(next);
+    }
+
+    function setMode(solid) {
+      hslRows.hidden = !solid;
+      modeLabel.textContent = solid ? 'solid' : 'blackbody';
+    }
+
+    check('solid color', p0.solid, (v) => {
+      setMode(v);
+      pushPalette({ solid: v });
+    });
+
+    const hslRows = el('div', null, panel);
+
+    const hslCfg = { parent: hslRows };
+    slider('hue', 0, 360, 1, p0.h, (v) => pushPalette({ h: v }),
+      Object.assign({ fmt: (v) => v.toFixed(0) + '°' }, hslCfg));
+    slider('saturation', 0, 1, 0.01, p0.s, (v) => pushPalette({ s: v }), hslCfg);
+    slider('lightness', 0, 1, 0.01, p0.l, (v) => pushPalette({ l: v }), hslCfg);
+
+    setMode(p0.solid);
+
+    // --- background -------------------------------------------------------
+    // A native color input: the swatch opens the platform's full picker.
+    function swatch(name, rgb, onChange) {
+      const row = el('div', 'aoui-row aoui-swatch', panel);
+      const label = el('label', null, row);
+      label.appendChild(document.createTextNode(name));
+      const out = el('i', null, label);
+      const input = el('input', null, row);
+      input.type = 'color';
+
+      const hex = (c) =>
+        '#' + c.map((v) => Math.round(Math.min(1, Math.max(0, v)) * 255)
+          .toString(16).padStart(2, '0')).join('');
+
+      input.value = hex(rgb);
+      out.textContent = input.value;
+      input.addEventListener('input', () => {
+        out.textContent = input.value;
+        const h = input.value;
+        onChange([
+          parseInt(h.slice(1, 3), 16) / 255,
+          parseInt(h.slice(3, 5), 16) / 255,
+          parseInt(h.slice(5, 7), 16) / 255,
+        ]);
+      });
+      return input;
+    }
+
+    swatch('background', s.background, (rgb) => view.setBackground(rgb));
 
     // --- clipping box -----------------------------------------------------
     function check(name, value, onChange, parent) {

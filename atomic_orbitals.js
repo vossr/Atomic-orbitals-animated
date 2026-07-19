@@ -10,7 +10,7 @@
  * via updatePositions() / updateRadii() / updateColors().
  *
  * Pipeline:
- *   1. scene -> G-buffer   (MRT: linear colour + view-space normal, depth texture)
+ *   1. scene -> G-buffer   (MRT: linear color + view-space normal, depth texture)
  *   2. SSAO                (hemisphere kernel over the depth buffer)
  *   3. blur + composite    (box-blur the AO, multiply, gamma, to the screen)
  */
@@ -82,6 +82,7 @@
 
   uniform mat4 uProj;
   uniform vec2 uViewport;
+  uniform float uRough;
 
   layout(location = 0) out vec4 oColor;    // linear; gamma happens at composite
   layout(location = 1) out vec4 oNormal;   // view-space normal, encoded
@@ -108,15 +109,19 @@
     vec4 clip = uProj * vec4(hit, 1.0);
     gl_FragDepth = (clip.z / clip.w) * 0.5 + 0.5;
 
-    // Blinn-Phong with a key light plus a little ambient/rim fill.
+    // Blinn-Phong with a key light plus a little ambient/rim fill. uRough runs
+    // 0 (a tight mirror glint) to 1 (matte), widening the highlight and fading
+    // it out together — a rougher surface spreads the same energy over more of
+    // the sphere, so a broad highlight has to be a dimmer one.
     vec3 L = normalize(vec3(0.4, 0.7, 0.6));
     vec3 V = -normalize(hit);
     vec3 H = normalize(L + V);
     float diff = max(dot(normal, L), 0.0);
-    float spec = pow(max(dot(normal, H), 0.0), 48.0);
+    float shine = exp2(1.0 + 10.0 * (1.0 - uRough));
+    float spec = pow(max(dot(normal, H), 0.0), shine) * (1.0 - uRough);
     float rim = pow(1.0 - max(dot(normal, V), 0.0), 3.0);
 
-    oColor = vec4(vColor * (0.18 + 0.82 * diff) + vec3(0.9) * spec * 0.5 + vColor * rim * 0.35, 1.0);
+    oColor = vec4(vColor * (0.18 + 0.82 * diff) + vec3(0.9) * spec * 0.6 + vColor * rim * 0.35, 1.0);
     oNormal = vec4(normal * 0.5 + 0.5, 1.0);
   }`;
 
@@ -376,7 +381,7 @@
     const compProg = link(gl, FULLSCREEN_VERT, COMPOSITE_FRAG);
     const lineProg = link(gl, LINE_VERT, LINE_FRAG);
 
-    const sphereU = uniforms(gl, sphereProg, ['view', 'proj', 'viewport', 'maxPointSize', 'clipMin', 'clipMax']);
+    const sphereU = uniforms(gl, sphereProg, ['view', 'proj', 'viewport', 'maxPointSize', 'clipMin', 'clipMax', 'rough']);
     const lineU = uniforms(gl, lineProg, ['view', 'proj']);
     const aoU = uniforms(gl, aoProg, ['depth', 'normal', 'proj', 'radius', 'bias', 'intensity']);
     aoU.kernel = gl.getUniformLocation(aoProg, 'uKernel[0]');   // arrays want the [0] form
@@ -417,8 +422,6 @@
     const maxPointSize = gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE)[1];
     const kernel = makeKernel(AO_KERNEL_SIZE);
 
-    gl.clearColor(0.043, 0.051, 0.071, 1);
-
     const proj = mat4Identity();
     const view = mat4Identity();
 
@@ -429,6 +432,8 @@
       dist: 6,
       autoSpin: 0.15,      // rad/s, disabled once the user drags
       superSample: 1,      // >1 renders the G-buffer larger and downsamples
+      rough: 0.4,          // specular spread, 0 = mirror glint, 1 = matte
+      background: [0.043, 0.051, 0.071],   // sRGB, matching the page behind us
       ao: { radius: 0.35, bias: 0.02, intensity: 1.0 },
       clip: {
         center: [0, 0, 0],
@@ -438,6 +443,15 @@
       },
       running: false,
     };
+
+    // The clear color lands in the G-buffer, which the composite pass gammas
+    // on its way to the screen — so store the linear value and the picked sRGB
+    // one survives the round trip intact.
+    function applyBackground() {
+      const b = state.background;
+      gl.clearColor(Math.pow(b[0], 2.2), Math.pow(b[1], 2.2), Math.pow(b[2], 2.2), 1);
+    }
+    applyBackground();
 
     // Which axis the pointer is over / dragging, and in which mode. Left
     // Control swaps translate for scale; the mode is latched at grab time so a
@@ -699,11 +713,27 @@
         return api;
       },
 
+      /** { roughness } — how the balls take the key light's highlight, 0..1. */
+      setMaterial(opts) {
+        if (opts.roughness !== undefined) {
+          state.rough = Math.min(1, Math.max(0, +opts.roughness));
+        }
+        return api;
+      },
+
+      /** Background, as an rgb array of sRGB values in 0..1. */
+      setBackground(rgb) {
+        state.background = [+rgb[0], +rgb[1], +rgb[2]];
+        applyBackground();
+        return api;
+      },
+
       /** Snapshot of the current settings (for UI to read defaults from). */
       settings() {
         return {
           yaw: state.yaw, pitch: state.pitch, dist: state.dist, autoSpin: state.autoSpin,
           superSample: state.superSample, ao: Object.assign({}, state.ao), count: state.count,
+          roughness: state.rough, background: state.background.slice(),
           clip: {
             center: state.clip.center.slice(), size: state.clip.size.slice(),
             showEdges: state.clip.showEdges, showGizmo: state.clip.showGizmo,
@@ -750,6 +780,7 @@
           gl.uniform1f(sphereU.maxPointSize, maxPointSize);
           gl.uniform3fv(sphereU.clipMin, clipMin);
           gl.uniform3fv(sphereU.clipMax, clipMax);
+          gl.uniform1f(sphereU.rough, state.rough);
           gl.bindVertexArray(vao);
           gl.drawArrays(gl.POINTS, 0, state.count);
           gl.bindVertexArray(null);
@@ -774,7 +805,7 @@
         gl.uniform1f(aoU.intensity, state.ao.intensity);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
 
-        // 3. blur AO + composite to the screen (linear filtering on the colour
+        // 3. blur AO + composite to the screen (linear filtering on the color
         //    texture downsamples for free when superSample > 1)
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         gl.viewport(0, 0, cw, ch);
