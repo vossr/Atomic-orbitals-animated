@@ -10,10 +10,10 @@
 (function () {
   'use strict';
 
-  const N0 = 100000;          // starting ball count; the UI slider changes it
+  const N0 = 300000;          // starting ball count; the UI slider changes it
   const R_WORLD = 2.0;        // the cloud is scaled to roughly this radius
-  const Q0 = { n: 3, l: 1, m: 0 };
-  const P0 = { solid: false, h: 205, s: 0.72, l: 0.55 };
+  const Q0 = { n: 5, l: 3, m: 1 };
+  const P0 = { solid: true, h: 100, s: 1, l: 0.6 };
 
   // Blackbody ramp, following the reference shader: cold red through to a hot
   // near-white. `i` runs 0..1.
@@ -146,11 +146,18 @@
     view.setCamera({ dist: 8 });
     // Occlusion radius is in world units — roughly the size of the cavities you
     // want darkened, not the size of a ball.
-    view.setAO({ radius: 3, intensity: 4, bias: 0.05 });
+    view.setAO({ radius: 2, intensity: 4, bias: 0.05 });
     view.setQuality({ superSample: 2 });
+    view.setMaterial({ roughness: 1 });
+    view.setBackground([1, 1, 1]);
     // Half the box's width offset on every axis, so its three near faces all
     // sit on the origin planes and it cuts a clean octant out of the cloud.
-    view.setClip({ center: [1.8, 1.8, 1.8], size: [3.6, 3.6, 3.6] });
+    // Edges and gizmo start hidden — the box is there to be turned on from the
+    // panel, not to frame the orbital by default.
+    view.setClip({
+      center: [0.6, 0.6, 0.6], size: [1.2, 1.2, 1.2],
+      showEdges: false, showGizmo: false,
+    });
 
     AtomicOrbitalsUI.attach(view, {
       quantum: q,
