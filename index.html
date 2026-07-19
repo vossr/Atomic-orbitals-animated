@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Atomic Orbitals — sphere impostors</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0d12; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; }
+  #error {
+    position: absolute; inset: 0; display: none; place-items: center;
+    color: #ff8080; font: 14px/1.5 system-ui, sans-serif; text-align: center; padding: 2rem;
+  }
+</style>
+</head>
+<body>
+  <canvas id="gl"></canvas>
+  <div id="error"></div>
+  <script src="atomic_orbitals.js"></script>
+  <script>
+    const view = AtomicOrbitals.create(document.getElementById('gl'));
+
+    // Three spheres that swing through each other so the depth test is visible.
+    const positions = new Float32Array(9);
+    view.setSpheres({
+      positions,
+      radii:  [0.9, 0.75, 0.6],
+      colors: [1.0, 0.35, 0.30,   0.35, 0.75, 1.0,   0.55, 1.0, 0.45],
+    });
+
+    view.onFrame = (t) => {
+      // Rewrite every vertex position each frame — this is the path the
+      // orbital point cloud will use later.
+      for (let i = 0; i < 3; i++) {
+        const a = t * 0.7 + (i * Math.PI * 2) / 3;
+        positions[i * 3 + 0] = Math.cos(a) * 1.1;
+        positions[i * 3 + 1] = Math.sin(a * 2) * 0.45;
+        positions[i * 3 + 2] = Math.sin(a) * 1.1;
+      }
+      view.updatePositions(positions);
+    };
+
+    view.start();
+  </script>
+</body>
+</html>
