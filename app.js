@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const N = 100000;
+  const N0 = 100000;          // starting ball count; the UI slider changes it
   const R = 2.0;              // radius of the ball the cloud fills
 
   function buildCloud(n) {
@@ -50,14 +50,22 @@
 
   function main() {
     const view = AtomicOrbitals.create(document.getElementById('gl'));
-    const cloud = buildCloud(N);
-    const { positions, dirs, shell, phase } = cloud;
 
-    view.setSpheres(cloud);
+    let n = 0;
+    let cloud = null;
+
+    function setCount(count) {
+      n = count;
+      cloud = buildCloud(count);      // the old cloud's buffers fall out of scope
+      view.setSpheres(cloud);
+    }
+
+    setCount(N0);
 
     view.onFrame = (time) => {
-      // All N vertices rewritten every frame.
-      for (let i = 0; i < N; i++) {
+      // All n vertices rewritten every frame.
+      const { positions, dirs, shell, phase } = cloud;
+      for (let i = 0; i < n; i++) {
         const k = i * 3;
         const breathe = shell[i] + 0.25 * Math.sin(time * 1.3 + phase[i]);
         positions[k + 0] = dirs[k + 0] * breathe;
@@ -70,9 +78,13 @@
     view.setCamera({ dist: 8 });
     // Occlusion radius is in world units — roughly the size of the cavities you
     // want darkened, not the size of a ball.
-    view.setAO({ radius: 0.18, intensity: 1.1, bias: 0.008 });
+    view.setAO({ radius: 3, intensity: 4, bias: 0.05 });
+    view.setQuality({ superSample: 2 });
+    // Half the box's width offset on every axis, so its three near faces all
+    // sit on the origin planes and it cuts a clean octant out of the cloud.
+    view.setClip({ center: [1.8, 1.8, 1.8], size: [3.6, 3.6, 3.6] });
 
-    AtomicOrbitalsUI.attach(view);
+    AtomicOrbitalsUI.attach(view, { onCount: setCount });
     view.start();
   }
 

@@ -32,12 +32,23 @@
   uniform mat4 uProj;
   uniform vec2 uViewport;      // render target size in px
   uniform float uMaxPointSize;
+  uniform vec3 uClipMin;       // clipping box, world space
+  uniform vec3 uClipMax;
 
   out vec3 vCenterView;        // sphere centre in view space
   out float vRadius;
   out vec3 vColor;
 
   void main() {
+    // Balls whose centre falls inside the clipping box are culled outright:
+    // pushing the vertex outside the clip volume drops the whole point sprite.
+    if (all(greaterThanEqual(aPosition, uClipMin)) &&
+        all(lessThanEqual(aPosition, uClipMax))) {
+      gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+      gl_PointSize = 0.0;
+      return;
+    }
+
     vec4 centerView = uView * vec4(aPosition, 1.0);
     vCenterView = centerView.xyz;
     vRadius = aRadius;
@@ -209,6 +220,34 @@
     oColor = vec4(pow(col, vec3(1.0 / 2.2)), 1.0);
   }`;
 
+  // --- overlay lines (clip box wireframe + gizmo) -------------------------
+  //
+  // Drawn straight to the default framebuffer after the composite, so they are
+  // already in sRGB and always on top. Gizmo handles you cannot see are gizmo
+  // handles you cannot grab, and the box interior is empty anyway.
+
+  const LINE_VERT = `#version 300 es
+  precision highp float;
+
+  in vec3 aLinePos;
+  in vec3 aLineColor;
+
+  uniform mat4 uView;
+  uniform mat4 uProj;
+
+  out vec3 vLineColor;
+
+  void main() {
+    vLineColor = aLineColor;
+    gl_Position = uProj * uView * vec4(aLinePos, 1.0);
+  }`;
+
+  const LINE_FRAG = `#version 300 es
+  precision highp float;
+  in vec3 vLineColor;
+  out vec4 oColor;
+  void main() { oColor = vec4(vLineColor, 1.0); }`;
+
   // --- minimal mat4 helpers (column-major, as WebGL expects) --------------
 
   function mat4Identity() {
@@ -257,6 +296,38 @@
     return k;
   }
 
+  // --- gizmo geometry / picking helpers -----------------------------------
+
+  const AXIS_COLOR = [[0.95, 0.32, 0.32], [0.40, 0.85, 0.40], [0.36, 0.62, 1.0]];
+  const AXIS_HOT = [1.0, 0.85, 0.30];
+  const EDGE_COLOR = [0.55, 0.62, 0.74];
+  const PICK_PX = 11;           // grab radius around a handle, CSS px
+
+  /** Distance from point p to segment ab, all in 2D. */
+  function distToSegment(p, a, b) {
+    const abx = b[0] - a[0], aby = b[1] - a[1];
+    const len2 = abx * abx + aby * aby;
+    let t = len2 > 0 ? ((p[0] - a[0]) * abx + (p[1] - a[1]) * aby) / len2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    const dx = p[0] - (a[0] + abx * t), dy = p[1] - (a[1] + aby * t);
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+
+  /**
+   * Parameter along the line C + s*A of the point closest to the ray O + u*D.
+   * Both A and D are unit; returns null when they are near-parallel and the
+   * closest point is therefore undefined (drag would explode).
+   */
+  function closestOnAxis(C, A, O, D) {
+    const wx = C[0] - O[0], wy = C[1] - O[1], wz = C[2] - O[2];
+    const b = A[0] * D[0] + A[1] * D[1] + A[2] * D[2];
+    const d = A[0] * wx + A[1] * wy + A[2] * wz;
+    const e = D[0] * wx + D[1] * wy + D[2] * wz;
+    const denom = 1 - b * b;
+    if (Math.abs(denom) < 1e-4) return null;
+    return (b * e - d) / denom;
+  }
+
   // --- GL plumbing --------------------------------------------------------
 
   function compile(gl, type, source) {
@@ -303,8 +374,10 @@
     const sphereProg = link(gl, SPHERE_VERT, SPHERE_FRAG);
     const aoProg = link(gl, FULLSCREEN_VERT, AO_FRAG);
     const compProg = link(gl, FULLSCREEN_VERT, COMPOSITE_FRAG);
+    const lineProg = link(gl, LINE_VERT, LINE_FRAG);
 
-    const sphereU = uniforms(gl, sphereProg, ['view', 'proj', 'viewport', 'maxPointSize']);
+    const sphereU = uniforms(gl, sphereProg, ['view', 'proj', 'viewport', 'maxPointSize', 'clipMin', 'clipMax']);
+    const lineU = uniforms(gl, lineProg, ['view', 'proj']);
     const aoU = uniforms(gl, aoProg, ['depth', 'normal', 'proj', 'radius', 'bias', 'intensity']);
     aoU.kernel = gl.getUniformLocation(aoProg, 'uKernel[0]');   // arrays want the [0] form
     const compU = uniforms(gl, compProg, ['color', 'aO', 'aOTexel']);
@@ -333,6 +406,14 @@
     };
     gl.bindVertexArray(null);
 
+    const lineVao = gl.createVertexArray();
+    gl.bindVertexArray(lineVao);
+    const lineBuffers = {
+      position: makeBuffer(gl.getAttribLocation(lineProg, 'aLinePos'), 3),
+      color: makeBuffer(gl.getAttribLocation(lineProg, 'aLineColor'), 3),
+    };
+    gl.bindVertexArray(null);
+
     const maxPointSize = gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE)[1];
     const kernel = makeKernel(AO_KERNEL_SIZE);
 
@@ -349,8 +430,30 @@
       autoSpin: 0.15,      // rad/s, disabled once the user drags
       superSample: 1,      // >1 renders the G-buffer larger and downsamples
       ao: { radius: 0.35, bias: 0.02, intensity: 1.0 },
+      clip: {
+        center: [0, 0, 0],
+        size: [1.6, 1.6, 1.6],   // full extents; the box is never rotated
+        showEdges: true,
+        showGizmo: true,
+      },
       running: false,
     };
+
+    // Which axis the pointer is over / dragging, and in which mode. Left
+    // Control swaps translate for scale; the mode is latched at grab time so a
+    // drag never changes meaning under your hand.
+    const gizmo = { hover: -1, axis: -1, mode: 'translate', ctrl: false, s0: 0, base: 0 };
+
+    const clipMin = new Float32Array(3);
+    const clipMax = new Float32Array(3);
+
+    function clipBounds() {
+      for (let i = 0; i < 3; i++) {
+        const h = Math.abs(state.clip.size[i]) * 0.5;
+        clipMin[i] = state.clip.center[i] - h;
+        clipMax[i] = state.clip.center[i] + h;
+      }
+    }
 
     // --- G-buffer + AO target ---------------------------------------------
 
@@ -405,6 +508,151 @@
       }
     }
 
+    // --- camera matrices, projection and unprojection ----------------------
+
+    function updateMatrices() {
+      const aspect = Math.max(1, canvas.clientWidth) / Math.max(1, canvas.clientHeight);
+      mat4Perspective(proj, (50 * Math.PI) / 180, aspect, 0.1, 100);
+      mat4View(view, state.yaw, state.pitch, state.dist);
+    }
+
+    /** World point -> CSS pixels within the canvas, or null if behind the eye. */
+    function project(p) {
+      const vx = view[0] * p[0] + view[4] * p[1] + view[8] * p[2] + view[12];
+      const vy = view[1] * p[0] + view[5] * p[1] + view[9] * p[2] + view[13];
+      const vz = view[2] * p[0] + view[6] * p[1] + view[10] * p[2] + view[14];
+      const w = -vz;
+      if (w <= 1e-4) return null;
+      return [
+        ((proj[0] * vx) / w * 0.5 + 0.5) * canvas.clientWidth,
+        (0.5 - (proj[5] * vy) / w * 0.5) * canvas.clientHeight,
+      ];
+    }
+
+    function localXY(e) {
+      const rect = canvas.getBoundingClientRect();
+      return [e.clientX - rect.left, e.clientY - rect.top];
+    }
+
+    /** Eye ray through the pointer, in world space. */
+    function pointerRay(e) {
+      const rect = canvas.getBoundingClientRect();
+      const nx = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      const ny = 1 - ((e.clientY - rect.top) / rect.height) * 2;
+      // View-space ray, then rotated into world by the transpose of the view
+      // rotation (which is its inverse, the view matrix being rigid).
+      const dv = [nx / proj[0], ny / proj[5], -1];
+      const d = [
+        view[0] * dv[0] + view[1] * dv[1] + view[2] * dv[2],
+        view[4] * dv[0] + view[5] * dv[1] + view[6] * dv[2],
+        view[8] * dv[0] + view[9] * dv[1] + view[10] * dv[2],
+      ];
+      const len = Math.hypot(d[0], d[1], d[2]);
+      d[0] /= len; d[1] /= len; d[2] /= len;
+      const o = [view[2] * state.dist, view[6] * state.dist, view[10] * state.dist];
+      return { o, d };
+    }
+
+    // --- gizmo ------------------------------------------------------------
+
+    function scaleMode() {
+      return gizmo.axis >= 0 ? gizmo.mode === 'scale' : gizmo.ctrl;
+    }
+
+    // Handles sit clear of the box face so they stay grabbable however small
+    // the box gets; dragging only ever uses the *change* in the parameter, so
+    // the offset itself never enters the arithmetic.
+    function handleLen(a, scale) {
+      return Math.abs(state.clip.size[a]) * 0.5 + (scale ? 0.10 : 0.22) * state.dist;
+    }
+
+    function pickAxis(px, py) {
+      if (!state.clip.showGizmo) return -1;
+      const c = state.clip.center;
+      const origin = project(c);
+      const scale = scaleMode();
+      let best = -1, bestD = PICK_PX;
+      for (let a = 0; a < 3; a++) {
+        const tip = c.slice();
+        tip[a] += handleLen(a, scale);
+        const p1 = project(tip);
+        if (!p1) continue;
+        // Only the outer 65% of the shaft is pickable, so the three axes do not
+        // fight over the pixels bunched up at the box centre.
+        const p0 = origin
+          ? [origin[0] + (p1[0] - origin[0]) * 0.35, origin[1] + (p1[1] - origin[1]) * 0.35]
+          : p1;
+        const d = distToSegment([px, py], p0, p1);
+        if (d < bestD) { bestD = d; best = a; }
+      }
+      return best;
+    }
+
+    // --- overlay line list, rebuilt each frame -----------------------------
+
+    const linePos = [];
+    const lineCol = [];
+
+    function seg(a, b, col) {
+      linePos.push(a[0], a[1], a[2], b[0], b[1], b[2]);
+      lineCol.push(col[0], col[1], col[2], col[0], col[1], col[2]);
+    }
+
+    function boxEdges(c, hx, hy, hz, col) {
+      const xs = [c[0] - hx, c[0] + hx];
+      const ys = [c[1] - hy, c[1] + hy];
+      const zs = [c[2] - hz, c[2] + hz];
+      for (let i = 0; i < 2; i++) {
+        for (let j = 0; j < 2; j++) {
+          seg([xs[0], ys[i], zs[j]], [xs[1], ys[i], zs[j]], col);
+          seg([xs[i], ys[0], zs[j]], [xs[i], ys[1], zs[j]], col);
+          seg([xs[i], ys[j], zs[0]], [xs[i], ys[j], zs[1]], col);
+        }
+      }
+    }
+
+    /** Wireframe cone pointing down +axis, tip at `tip`. */
+    function cone(tip, axis, r, len, col) {
+      const u = (axis + 1) % 3, v = (axis + 2) % 3;
+      let prev = null, first = null;
+      for (let k = 0; k < 4; k++) {
+        const ang = (k * Math.PI) / 2;
+        const p = tip.slice();
+        p[axis] -= len;
+        p[u] += Math.cos(ang) * r;
+        p[v] += Math.sin(ang) * r;
+        seg(p, tip, col);
+        if (prev) seg(prev, p, col); else first = p;
+        prev = p;
+      }
+      seg(prev, first, col);
+    }
+
+    function buildLines() {
+      linePos.length = 0;
+      lineCol.length = 0;
+      const c = state.clip.center;
+
+      if (state.clip.showEdges) {
+        const s = state.clip.size;
+        boxEdges(c, Math.abs(s[0]) * 0.5, Math.abs(s[1]) * 0.5, Math.abs(s[2]) * 0.5, EDGE_COLOR);
+      }
+
+      if (state.clip.showGizmo) {
+        const scale = scaleMode();
+        const k = 0.035 * state.dist;      // ornament size, ~constant on screen
+        for (let a = 0; a < 3; a++) {
+          const lit = gizmo.axis >= 0 ? gizmo.axis === a : gizmo.hover === a;
+          const col = lit ? AXIS_HOT : AXIS_COLOR[a];
+          const tip = c.slice();
+          tip[a] += handleLen(a, scale);
+          seg(c, tip, col);
+          if (scale) boxEdges(tip, k * 0.6, k * 0.6, k * 0.6, col);
+          else cone(tip, a, k * 0.55, k * 1.9, col);
+        }
+      }
+    }
+
     const api = {
       gl,
       canvas,
@@ -432,6 +680,19 @@
         return api;
       },
 
+      /**
+       * Clipping box: balls whose centre lands inside it are not drawn.
+       * Any of { center, size, showEdges, showGizmo }; center/size are xyz
+       * arrays. The box is axis-aligned and cannot be rotated.
+       */
+      setClip(opts) {
+        if (opts.center) state.clip.center = [+opts.center[0], +opts.center[1], +opts.center[2]];
+        if (opts.size) state.clip.size = [+opts.size[0], +opts.size[1], +opts.size[2]];
+        if (opts.showEdges !== undefined) state.clip.showEdges = !!opts.showEdges;
+        if (opts.showGizmo !== undefined) state.clip.showGizmo = !!opts.showGizmo;
+        return api;
+      },
+
       /** { superSample } — 2 supersamples the G-buffer, costs 4x the fill. */
       setQuality(opts) {
         if (opts.superSample !== undefined) state.superSample = opts.superSample;
@@ -443,6 +704,10 @@
         return {
           yaw: state.yaw, pitch: state.pitch, dist: state.dist, autoSpin: state.autoSpin,
           superSample: state.superSample, ao: Object.assign({}, state.ao), count: state.count,
+          clip: {
+            center: state.clip.center.slice(), size: state.clip.size.slice(),
+            showEdges: state.clip.showEdges, showGizmo: state.clip.showGizmo,
+          },
         };
       },
 
@@ -467,8 +732,8 @@
         const h = Math.max(1, Math.round(ch * ss));
         allocTargets(w, h);
 
-        mat4Perspective(proj, (50 * Math.PI) / 180, cw / ch, 0.1, 100);
-        mat4View(view, state.yaw, state.pitch, state.dist);
+        updateMatrices();
+        clipBounds();
 
         // 1. scene -> G-buffer
         gl.bindFramebuffer(gl.FRAMEBUFFER, targets.gFbo);
@@ -483,6 +748,8 @@
           gl.uniformMatrix4fv(sphereU.view, false, view);
           gl.uniform2f(sphereU.viewport, w, h);
           gl.uniform1f(sphereU.maxPointSize, maxPointSize);
+          gl.uniform3fv(sphereU.clipMin, clipMin);
+          gl.uniform3fv(sphereU.clipMax, clipMax);
           gl.bindVertexArray(vao);
           gl.drawArrays(gl.POINTS, 0, state.count);
           gl.bindVertexArray(null);
@@ -520,6 +787,19 @@
         gl.uniform1i(compU.aO, 1);
         gl.uniform2f(compU.aOTexel, 1 / w, 1 / h);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+        // 4. clip-box wireframe + gizmo, straight over the composited image
+        buildLines();
+        if (linePos.length) {
+          upload(lineBuffers.position, linePos);
+          upload(lineBuffers.color, lineCol);
+          gl.useProgram(lineProg);
+          gl.uniformMatrix4fv(lineU.proj, false, proj);
+          gl.uniformMatrix4fv(lineU.view, false, view);
+          gl.bindVertexArray(lineVao);
+          gl.drawArrays(gl.LINES, 0, linePos.length / 3);
+          gl.bindVertexArray(null);
+        }
       },
 
       start() {
@@ -543,23 +823,79 @@
       stop() { state.running = false; },
     };
 
-    // --- drag to orbit, wheel to zoom -------------------------------------
+    // --- drag the gizmo, else orbit; wheel to zoom -------------------------
     let dragging = false, lastX = 0, lastY = 0;
+    let dragOrigin = null;      // box centre latched at grab time
+
+    // Parameter along the grabbed axis of the point nearest the pointer ray.
+    function axisParam(e) {
+      const A = [0, 0, 0];
+      A[gizmo.axis] = 1;
+      const r = pointerRay(e);
+      return closestOnAxis(dragOrigin, A, r.o, r.d);
+    }
+
     canvas.addEventListener('pointerdown', (e) => {
-      dragging = true; lastX = e.clientX; lastY = e.clientY;
+      gizmo.ctrl = e.ctrlKey;
+      updateMatrices();
       state.autoSpin = 0;
       canvas.setPointerCapture(e.pointerId);
+
+      const xy = localXY(e);
+      const a = pickAxis(xy[0], xy[1]);
+      if (a >= 0) {
+        const scale = scaleMode();
+        dragOrigin = state.clip.center.slice();
+        gizmo.axis = a;
+        gizmo.mode = scale ? 'scale' : 'translate';
+        const s = axisParam(e);
+        if (s !== null) {
+          gizmo.s0 = s;
+          gizmo.base = scale ? Math.abs(state.clip.size[a]) * 0.5 : state.clip.center[a];
+          return;
+        }
+        gizmo.axis = -1;     // axis edge-on to the eye: nothing to drag along
+      }
+
+      dragging = true; lastX = e.clientX; lastY = e.clientY;
     });
+
     canvas.addEventListener('pointerup', (e) => {
       dragging = false;
+      gizmo.axis = -1;
       canvas.releasePointerCapture(e.pointerId);
     });
+
     canvas.addEventListener('pointermove', (e) => {
-      if (!dragging) return;
-      state.yaw += (e.clientX - lastX) * 0.008;
-      state.pitch = Math.max(-1.5, Math.min(1.5, state.pitch + (e.clientY - lastY) * 0.008));
-      lastX = e.clientX; lastY = e.clientY;
+      if (gizmo.axis >= 0) {
+        const s = axisParam(e);
+        if (s === null) return;
+        if (gizmo.mode === 'scale') {
+          // The handle tracks the face, so the half-extent follows the pointer.
+          state.clip.size[gizmo.axis] = Math.max(0.02, (gizmo.base + (s - gizmo.s0)) * 2);
+        } else {
+          state.clip.center[gizmo.axis] = gizmo.base + (s - gizmo.s0);
+        }
+        return;
+      }
+
+      if (dragging) {
+        state.yaw += (e.clientX - lastX) * 0.008;
+        state.pitch = Math.max(-1.5, Math.min(1.5, state.pitch + (e.clientY - lastY) * 0.008));
+        lastX = e.clientX; lastY = e.clientY;
+        return;
+      }
+
+      gizmo.ctrl = e.ctrlKey;
+      const xy = localXY(e);
+      gizmo.hover = pickAxis(xy[0], xy[1]);
+      canvas.style.cursor = gizmo.hover >= 0 ? 'grab' : '';
     });
+
+    // Left Control swaps the gizmo between translate and scale.
+    global.addEventListener('keydown', (e) => { if (e.key === 'Control') gizmo.ctrl = true; });
+    global.addEventListener('keyup', (e) => { if (e.key === 'Control') gizmo.ctrl = false; });
+    global.addEventListener('blur', () => { gizmo.ctrl = false; });
     canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
       state.dist = Math.max(1.5, Math.min(40, state.dist * Math.exp(e.deltaY * 0.001)));

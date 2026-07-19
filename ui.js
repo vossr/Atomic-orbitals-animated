@@ -53,6 +53,18 @@
     width: 11px; height: 11px; border-radius: 50%; background: #74a8ff; border: 0;
   }
   .aoui-foot { margin-top: 11px; color: #5c6675; font-size: 10px; }
+  .aoui-sep {
+    margin-top: 11px; padding-top: 9px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  .aoui-check {
+    display: flex; align-items: center; gap: 7px;
+    margin-top: 6px; color: #8b97a8; cursor: pointer;
+  }
+  .aoui-check:hover { color: #c9d3e0; }
+  .aoui-check input {
+    width: 12px; height: 12px; margin: 0; accent-color: #74a8ff; cursor: pointer;
+  }
   `;
 
   function el(tag, cls, parent) {
@@ -83,30 +95,78 @@
     fpsSub.textContent = 'fps';
 
     // --- sliders ----------------------------------------------------------
-    function slider(name, min, max, step, value, onInput) {
+    //
+    // cfg: { fmt, log, snap, commit }. `log` spreads a range spanning decades
+    // evenly across the track, `snap` quantises the result, and `commit` waits
+    // for the drag to end before firing — for anything too costly to redo on
+    // every pixel of travel.
+    function slider(name, min, max, step, value, onInput, cfg) {
+      cfg = cfg || {};
+      const fmt = cfg.fmt || ((v) => v.toFixed(step < 0.01 ? 3 : 2));
       const row = el('div', 'aoui-row', panel);
       const label = el('label', null, row);
       label.appendChild(document.createTextNode(name));
       const out = el('i', null, label);
       const input = el('input', null, row);
       input.type = 'range';
-      input.min = min; input.max = max; input.step = step; input.value = value;
-      const show = (v) => { out.textContent = (+v).toFixed(step < 0.01 ? 3 : 2); };
+
+      const toValue = (t) => {
+        const v = cfg.log ? min * Math.pow(max / min, t / 1000) : t;
+        return cfg.snap ? Math.round(v / cfg.snap) * cfg.snap : v;
+      };
+      const toSlider = (v) =>
+        cfg.log ? (1000 * Math.log(v / min)) / Math.log(max / min) : v;
+
+      input.min = cfg.log ? 0 : min;
+      input.max = cfg.log ? 1000 : max;
+      input.step = cfg.log ? 1 : step;
+      input.value = toSlider(value);
+
+      const read = () => toValue(parseFloat(input.value));
+      const show = (v) => { out.textContent = fmt(v); };
       show(value);
       input.addEventListener('input', () => {
-        show(input.value);
-        onInput(parseFloat(input.value));
+        show(read());
+        if (!cfg.commit) onInput(read());
       });
+      if (cfg.commit) input.addEventListener('change', () => onInput(read()));
       return input;
     }
 
-    slider('ao radius', 0.01, 1.0, 0.01, s.ao.radius, (v) => view.setAO({ radius: v }));
-    slider('ao intensity', 0, 2.5, 0.05, s.ao.intensity, (v) => view.setAO({ intensity: v }));
-    slider('ao bias', 0, 0.05, 0.001, s.ao.bias, (v) => view.setAO({ bias: v }));
-    slider('supersample', 1, 2, 0.5, s.superSample, (v) => view.setQuality({ superSample: v }));
+    const fmtCount = (v) =>
+      v >= 1e6 ? (v / 1e6).toFixed(2) + 'M' : Math.round(v / 1000) + 'k';
+
+    // Rebuilding the cloud at a million balls is far too slow to do live, so
+    // this one only fires when the drag ends.
+    slider('balls', 10000, 1000000, 1, s.count, (v) => {
+      if (opts.onCount) opts.onCount(v);
+      setFoot(v);
+    }, { log: true, snap: 1000, commit: true, fmt: fmtCount });
+
+    slider('ao radius', 0.01, 5.0, 0.01, s.ao.radius, (v) => view.setAO({ radius: v }));
+    slider('ao intensity', 0, 5, 0.05, s.ao.intensity, (v) => view.setAO({ intensity: v }));
+    slider('supersample', 1, 8, 0.5, s.superSample, (v) => view.setQuality({ superSample: v }));
+
+    // --- clipping box -----------------------------------------------------
+    function check(name, value, onChange, parent) {
+      const row = el('label', 'aoui-check', parent || panel);
+      const input = el('input', null, row);
+      input.type = 'checkbox';
+      input.checked = value;
+      row.appendChild(document.createTextNode(name));
+      input.addEventListener('change', () => onChange(input.checked));
+      return input;
+    }
+
+    const clipBox = el('div', 'aoui-sep', panel);
+    check('clip box edges', s.clip.showEdges, (v) => view.setClip({ showEdges: v }), clipBox);
+    check('clip box gizmo', s.clip.showGizmo, (v) => view.setClip({ showGizmo: v }), clipBox);
 
     const foot = el('div', 'aoui-foot', panel);
-    foot.textContent = s.count.toLocaleString() + ' spheres · H to hide';
+    function setFoot(n) {
+      foot.textContent = n.toLocaleString() + ' spheres · ctrl = scale gizmo · H to hide';
+    }
+    setFoot(s.count);
 
     // --- frame timing -----------------------------------------------------
     // Wrap render() rather than running a separate rAF, so the count follows
