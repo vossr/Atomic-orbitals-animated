@@ -438,6 +438,14 @@
         return api;
       },
 
+      /** Snapshot of the current settings (for UI to read defaults from). */
+      settings() {
+        return {
+          yaw: state.yaw, pitch: state.pitch, dist: state.dist, autoSpin: state.autoSpin,
+          superSample: state.superSample, ao: Object.assign({}, state.ao), count: state.count,
+        };
+      },
+
       updatePositions(positions) { upload(buffers.position, positions); },
       updateRadii(radii) { upload(buffers.radius, radii); },
       updateColors(colors) { upload(buffers.color, colors); },
