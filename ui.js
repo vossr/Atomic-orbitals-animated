@@ -52,6 +52,14 @@
   .aoui input[type=range]::-moz-range-thumb {
     width: 11px; height: 11px; border-radius: 50%; background: #74a8ff; border: 0;
   }
+  .aoui-title {
+    display: flex; justify-content: space-between; align-items: baseline;
+    margin: 4px 0 6px; color: #dfe6ef;
+    font-size: 13px; letter-spacing: 0.03em;
+  }
+  /* The section's live readout, e.g. the orbital's spectroscopic name. */
+  .aoui-title i { font-style: normal; font-size: 11px; color: #e0b070; }
+  .aoui-title.aoui-sep { margin-top: 13px; }
   .aoui-foot { margin-top: 11px; color: #5c6675; font-size: 10px; }
   .aoui-sep {
     margin-top: 11px; padding-top: 9px;
@@ -132,6 +140,67 @@
       if (cfg.commit) input.addEventListener('change', () => onInput(read()));
       return input;
     }
+
+    // --- quantum numbers --------------------------------------------------
+    //
+    // n, l and m are integers with nested ranges: 0 <= l < n and |m| <= l. The
+    // dependent sliders get their bounds rewritten whenever the one above them
+    // moves, and their value clamped into the new range.
+    function intSlider(name, min, max, value, onInput) {
+      const row = el('div', 'aoui-row', panel);
+      const label = el('label', null, row);
+      label.appendChild(document.createTextNode(name));
+      const out = el('i', null, label);
+      const input = el('input', null, row);
+      input.type = 'range';
+      input.step = 1;
+
+      input.min = min;
+      input.max = max;
+      input.value = value;
+
+      const show = () => { out.textContent = input.value; };
+      const self = {
+        get value() { return parseInt(input.value, 10); },
+        setRange(lo, hi) {
+          const v = self.value;
+          input.min = lo;
+          input.max = hi;
+          input.value = Math.min(hi, Math.max(lo, v));
+          show();
+        },
+      };
+      show();
+
+      input.addEventListener('input', () => { show(); onInput(); });
+      return self;
+    }
+
+    /** Section heading. `sep` rules a line above it; returns its readout slot. */
+    function title(name, sep) {
+      const row = el('div', 'aoui-title' + (sep ? ' aoui-sep' : ''), panel);
+      row.appendChild(document.createTextNode(name));
+      return el('i', null, row);
+    }
+
+    const orbLabel = title('Quantums');
+    const q0 = opts.quantum || { n: 3, l: 1, m: 0 };
+
+    function pushQuantum() {
+      // Order matters: n bounds l, and l bounds m.
+      sl.setRange(0, sn.value - 1);
+      sm.setRange(-sl.value, sl.value);
+      const q = { n: sn.value, l: sl.value, m: sm.value };
+      orbLabel.textContent = Orbital.label(q.n, q.l, q.m);
+      if (opts.onQuantum) opts.onQuantum(q);
+    }
+
+    const sn = intSlider('n  principal', 2, 5, q0.n, pushQuantum);
+    const sl = intSlider('l  angular', 0, q0.n - 1, q0.l, pushQuantum);
+    const sm = intSlider('m  magnetic', -q0.l, q0.l, q0.m, pushQuantum);
+    orbLabel.textContent = Orbital.label(q0.n, q0.l, q0.m);
+
+    title('Rendering', true);
 
     const fmtCount = (v) =>
       v >= 1e6 ? (v / 1e6).toFixed(2) + 'M' : Math.round(v / 1000) + 'k';

@@ -1,79 +1,93 @@
 /*
- * app.js — the scene: builds the ball cloud, animates it, wires up the UI.
- * Rendering lives in atomic_orbitals.js, controls in ui.js.
+ * app.js — the scene: samples a hydrogen orbital into a ball cloud, wires up
+ * the UI. Rendering lives in atomic_orbitals.js, controls in ui.js, the
+ * wavefunction maths in orbital.js.
+ *
+ * The balls are stationary. A real (rather than complex) wavefunction is a
+ * standing wave, so its Bohmian velocity field is identically zero anyway —
+ * these points are the ensemble at rest, not a snapshot of anything moving.
  */
 (function () {
   'use strict';
 
   const N0 = 100000;          // starting ball count; the UI slider changes it
-  const R = 2.0;              // radius of the ball the cloud fills
+  const R_WORLD = 2.0;        // the cloud is scaled to roughly this radius
+  const Q0 = { n: 3, l: 1, m: 0 };
 
-  function buildCloud(n) {
-    const positions = new Float32Array(n * 3);
-    const radii = new Float32Array(n);
-    const colors = new Float32Array(n * 3);
-    const dirs = new Float32Array(n * 3);   // unit direction
-    const shell = new Float32Array(n);      // distance from the centre
-    const phase = new Float32Array(n);
+  // Blackbody ramp, following the reference shader: cold red through to a hot
+  // near-white. `i` runs 0..1.
+  function blackbody(i, out) {
+    const T = 1400 + 1400 * i;
+    const L = [7.4, 5.6, 4.4];      // r,g,b wavelengths, hundreds of nm
+    for (let c = 0; c < 3; c++) {
+      const w = Math.pow(L[c], 5) * (Math.exp(1.43876719683e5 / (T * L[c])) - 1);
+      out[c] = 1 - Math.exp(-5e8 / w);
+    }
+    return out;
+  }
 
-    for (let i = 0; i < n; i++) {
-      // Uniform over the sphere's *volume*: rejection-sample the cube and keep
-      // what lands inside the unit ball. (Scaling a random direction by a
-      // uniform radius would pile everything up near the centre.)
-      let x, y, z, d2;
-      do {
-        x = Math.random() * 2 - 1;
-        y = Math.random() * 2 - 1;
-        z = Math.random() * 2 - 1;
-        d2 = x * x + y * y + z * z;
-      } while (d2 > 1 || d2 < 1e-12);
+  /**
+   * Draws `count` points from |psi_nlm|^2 and packs them into render buffers.
+   * Positions come back scaled so the orbital fills R_WORLD regardless of n —
+   * a 5g orbital is some 25x wider than a 2p one, and without this only one
+   * choice of n would be on screen at a time.
+   *
+   * The sampler works in physics coordinates, where the quantization axis is z.
+   * The renderer orbits about y, so that is the axis a viewer reads as vertical
+   * and the one an orbital is drawn around by convention. Rotating -90 degrees
+   * about x lines them up: (x, y, z)_phys -> (x, z, -y)_render. A plain swap of
+   * y and z would do it too, but it mirrors the scene and would flip the
+   * handedness of the m < 0 lobes.
+   */
+  function buildCloud(count, q) {
+    const s = Orbital.sampler(q.n, q.l, q.m);
 
-      const len = Math.sqrt(d2);
-      dirs[i * 3 + 0] = x / len;
-      dirs[i * 3 + 1] = y / len;
-      dirs[i * 3 + 2] = z / len;
-      shell[i] = len * R;
+    const positions = new Float32Array(count * 3);
+    const radii = new Float32Array(count);
+    const colors = new Float32Array(count * 3);
 
-      phase[i] = Math.random() * Math.PI * 2;
-      radii[i] = 0.012 + 0.010 * Math.random();
+    const scale = R_WORLD / s.rOuter;
+    const rgb = [0, 0, 0];
 
-      // Colour by hemisphere, the way orbital lobes get signed.
-      const ny = y / len;
-      const t = ny * 0.5 + 0.5;
-      colors[i * 3 + 0] = 0.25 + 0.75 * t;
-      colors[i * 3 + 1] = 0.45 + 0.25 * Math.abs(ny);
-      colors[i * 3 + 2] = 1.0 - 0.6 * t;
+    for (let i = 0; i < count; i++) {
+      const k = i * 3;
+      s.sample(positions, k);
+      const x = positions[k], y = positions[k + 1], z = positions[k + 2];
+
+      positions[k] = x * scale;
+      positions[k + 1] = z * scale;
+      positions[k + 2] = -y * scale;
+
+      radii[i] = 0.008 + 0.006 * Math.random();
+
+      // Brightness tracks how dense this point's neighbourhood is; hue splits
+      // the lobes by the sign of psi, which is the structure you actually want
+      // to read off an orbital.
+      const p = s.psi(x, y, z);
+      const t = Math.pow(Math.min(1, (p * p) / s.maxDensity), 1 / 2.2);
+      blackbody(t, rgb);
+      if (p >= 0) {
+        colors[k] = rgb[0]; colors[k + 1] = rgb[1]; colors[k + 2] = rgb[2];
+      } else {
+        // Same ramp read cold: swap the red and blue ends.
+        colors[k] = rgb[2] * 0.9; colors[k + 1] = rgb[1] * 0.95; colors[k + 2] = rgb[0];
+      }
     }
 
-    return { positions, radii, colors, dirs, shell, phase };
+    return { positions, radii, colors };
   }
 
   function main() {
     const view = AtomicOrbitals.create(document.getElementById('gl'));
 
-    let n = 0;
-    let cloud = null;
+    let count = N0;
+    let q = Orbital.clampQuantum(Q0.n, Q0.l, Q0.m);
 
-    function setCount(count) {
-      n = count;
-      cloud = buildCloud(count);      // the old cloud's buffers fall out of scope
-      view.setSpheres(cloud);
+    function rebuild() {
+      view.setSpheres(buildCloud(count, q));   // old buffers fall out of scope
     }
 
-    setCount(N0);
-
-    view.onFrame = (time) => {
-      // All n vertices rewritten every frame.
-      const { positions, dirs, shell, phase } = cloud;
-      for (let i = 0; i < n; i++) {
-        const k = i * 3;
-        const breathe = shell[i] + 0.25 * Math.sin(time * 1.3 + phase[i]);
-        positions[k + 0] = dirs[k + 0] * breathe;
-        positions[k + 1] = dirs[k + 1] * breathe + 0.12 * Math.sin(time * 2 + phase[i]);
-        positions[k + 2] = dirs[k + 2] * breathe;
-      }
-      view.updatePositions(positions);
-    };
+    rebuild();
 
     view.setCamera({ dist: 8 });
     // Occlusion radius is in world units — roughly the size of the cavities you
@@ -84,7 +98,11 @@
     // sit on the origin planes and it cuts a clean octant out of the cloud.
     view.setClip({ center: [1.8, 1.8, 1.8], size: [3.6, 3.6, 3.6] });
 
-    AtomicOrbitalsUI.attach(view, { onCount: setCount });
+    AtomicOrbitalsUI.attach(view, {
+      quantum: q,
+      onCount: (v) => { count = v; rebuild(); },
+      onQuantum: (next) => { q = next; rebuild(); },
+    });
     view.start();
   }
 
