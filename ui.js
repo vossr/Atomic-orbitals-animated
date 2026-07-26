@@ -83,6 +83,18 @@
   .aoui input[type=color]::-webkit-color-swatch-wrapper { padding: 0; }
   .aoui input[type=color]::-webkit-color-swatch { border: 0; border-radius: 1px; }
   .aoui input[type=color]::-moz-color-swatch { border: 0; border-radius: 1px; }
+  /* The n slider's editable ceiling: shown as "value / max" beside the readout. */
+  .aoui-int-right { display: flex; align-items: baseline; gap: 5px; }
+  .aoui-int-sep { color: #5c6675; }
+  .aoui input[type=number] {
+    width: 34px; padding: 0 3px; text-align: right;
+    color: #dfe6ef; font: inherit;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 3px;
+    -moz-appearance: textfield;
+  }
+  .aoui input[type=number]::-webkit-inner-spin-button,
+  .aoui input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
   `;
 
   function el(tag, cls, parent) {
@@ -155,12 +167,18 @@
     //
     // n, l and m are integers with nested ranges: 0 <= l < n and |m| <= l. The
     // dependent sliders get their bounds rewritten whenever the one above them
-    // moves, and their value clamped into the new range.
-    function intSlider(name, min, max, value, onInput) {
+    // moves, and their value clamped into the new range. n's own ceiling is not
+    // fixed either: an editable "/ max" box beside its value rewrites it, so how
+    // far the shells reach is a setting rather than a constant.
+    //
+    // Passing maxCeil turns the readout into "value / max", the max a typed box
+    // that re-ranges this slider. Only n uses it.
+    function intSlider(name, min, max, value, onInput, maxCeil) {
       const row = el('div', 'aoui-row', panel);
       const label = el('label', null, row);
       label.appendChild(document.createTextNode(name));
-      const out = el('i', null, label);
+      const right = el('span', 'aoui-int-right', label);
+      const out = el('i', null, right);
       const input = el('input', null, row);
       input.type = 'range';
       input.step = 1;
@@ -181,6 +199,25 @@
         },
       };
       show();
+
+      // The editable ceiling, capped at maxCeil (past which |psi|^2 overflows a
+      // double as the radial CDF is built). Lowering it below n drags n down too.
+      if (maxCeil) {
+        el('span', 'aoui-int-sep', right).textContent = '/';
+        const cap = el('input', null, right);
+        cap.type = 'number';
+        cap.min = min; cap.max = maxCeil; cap.step = 1;
+        cap.value = max;
+        let last = max;
+        cap.addEventListener('change', () => {
+          let hi = Math.round(parseFloat(cap.value));
+          hi = isFinite(hi) ? Math.min(maxCeil, Math.max(min, hi)) : last;
+          cap.value = hi;
+          last = hi;
+          self.setRange(min, hi);
+          onInput();
+        });
+      }
 
       input.addEventListener('input', () => { show(); onInput(); });
       return self;
@@ -205,7 +242,9 @@
       if (opts.onQuantum) opts.onQuantum(q);
     }
 
-    const sn = intSlider('n  principal', 2, 5, q0.n, pushQuantum);
+    const N_MAX_DEFAULT = 7;   // starting ceiling; the "/ max" box beside n raises it
+    const N_CEIL = 80;         // highest ceiling allowed, before |psi|^2 overflows
+    const sn = intSlider('n  principal', 2, N_MAX_DEFAULT, q0.n, pushQuantum, N_CEIL);
     const sl = intSlider('l  angular', 0, q0.n - 1, q0.l, pushQuantum);
     const sm = intSlider('m  magnetic', -q0.l, q0.l, q0.m, pushQuantum);
     orbLabel.textContent = Orbital.label(q0.n, q0.l, q0.m);

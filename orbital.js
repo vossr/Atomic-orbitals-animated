@@ -11,7 +11,7 @@
  * Because the density separates as R(r)^2 * Y(theta,phi)^2, points are drawn in
  * two independent steps: the radius from a tabulated CDF of 4 pi r^2 R^2, the
  * direction by rejection against max Y^2. Plain rejection over a bounding box
- * would accept well under a percent of its tries at n = 5.
+ * would accept well under a percent of its tries at n = 80.
  *
  * Nothing here is normalised: rejection and inverse-CDF sampling both only care
  * about ratios, and the caller scales the cloud to the viewport anyway.
@@ -24,7 +24,9 @@
 
   /**
    * Generalised Laguerre L_n^a(x), by the standard three-term recurrence.
-   * Stable enough here: n - l - 1 never exceeds 4 for the n <= 5 we expose.
+   * Stable enough here: the degree n - l - 1 reaches 79 at the n <= 80 we expose,
+   * still inside where this forward recurrence stays well-conditioned. Above ~86
+   * the unnormalised R^2 overflows a double, which is what really caps n.
    */
   function laguerre(n, a, x) {
     if (n === 0) return 1;
@@ -190,10 +192,12 @@
     };
   }
 
-  /** Spectroscopic name, e.g. (3, 2, -1) -> "3d". */
+  /** Spectroscopic name, e.g. (3, 2, -1) -> "3d". Empty past l = 5, which has no
+   *  standard letter, so callers simply show nothing rather than a placeholder. */
   function label(n, l, m) {
-    const letters = 'spdfgh';
-    return n + (letters[l] || '?') + (m === 0 ? '' : (m > 0 ? '+' : '-') + Math.abs(m));
+    const letter = 'spdfgh'[l];
+    if (letter === undefined) return '';
+    return n + letter + (m === 0 ? '' : (m > 0 ? '+' : '-') + Math.abs(m));
   }
 
   global.Orbital = { sampler, clampQuantum, laguerre, nalp, realY, radial, label };
