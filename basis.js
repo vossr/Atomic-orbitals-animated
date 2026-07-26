@@ -19,6 +19,14 @@
     'Sc', 'Ti', 'V', 'Cr', 'Mn', 'Fe', 'Co', 'Ni', 'Cu', 'Zn',
     'Ga', 'Ge', 'As', 'Se', 'Br', 'Kr'];
 
+  const NAME = [null,
+    'Hydrogen', 'Helium', 'Lithium', 'Beryllium', 'Boron', 'Carbon',
+    'Nitrogen', 'Oxygen', 'Fluorine', 'Neon', 'Sodium', 'Magnesium',
+    'Aluminium', 'Silicon', 'Phosphorus', 'Sulfur', 'Chlorine', 'Argon',
+    'Potassium', 'Calcium', 'Scandium', 'Titanium', 'Vanadium', 'Chromium',
+    'Manganese', 'Iron', 'Cobalt', 'Nickel', 'Copper', 'Zinc', 'Gallium',
+    'Germanium', 'Arsenic', 'Selenium', 'Bromine', 'Krypton'];
+
   // Madelung filling order, enough for Z <= 36. The Cr/Cu anomalies move one
   // electron between 4s and 3d but never empty either shell, so the *set* of
   // occupied shells — all this file cares about — is aufbau-exact through Kr.
@@ -78,7 +86,7 @@
         shells.push({ n: occ.n, l: occ.l, electrons: occ.electrons,
                       exponents: fn.exponents, coeffs: fn.coeffs });
       }
-      if (shells.length) out.push({ Z, symbol: SYMBOL[Z], shells });
+      if (shells.length) out.push({ Z, symbol: SYMBOL[Z], name: NAME[Z], shells });
     }
     return out.sort((a, b) => a.Z - b.Z);
   }

@@ -105,6 +105,10 @@
   /* The popup list ignores the panel styling and would come out black-on-white
      in some browsers; pin its own colors. */
   .aoui select option { background: #14181f; color: #dfe6ef; }
+  /* Atom row: label text, dropdown and type note share one inline line, the
+     select flexing to fill the gap between them. */
+  .aoui-atom label { align-items: center; gap: 6px; margin-bottom: 0; }
+  .aoui-atom select { width: auto; flex: 1; min-width: 0; }
   `;
 
   function el(tag, cls, parent) {
@@ -260,20 +264,20 @@
     let atomNote = null;
 
     if (elements.length) {
-      const row = el('div', 'aoui-row', panel);
+      const row = el('div', 'aoui-row aoui-atom', panel);
       const label = el('label', null, row);
       label.appendChild(document.createTextNode('atom'));
+      const sel = el('select', null, label);
       atomNote = el('i', null, label);
       atomNote.textContent = 'exact ψ';
-      const sel = el('select', null, row);
       const h = el('option', null, sel);
       h.value = '';
-      h.textContent = '1 H';
+      h.textContent = '1 H — Hydrogen';
       for (const e of elements) {
         if (e.Z === 1) continue;            // analytic H beats its own basis fit
         const o = el('option', null, sel);
         o.value = e.symbol;
-        o.textContent = e.Z + ' ' + e.symbol;
+        o.textContent = e.Z + ' ' + e.symbol + ' — ' + e.name;
       }
       sel.addEventListener('change', () => {
         elem = null;
