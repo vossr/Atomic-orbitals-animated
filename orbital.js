@@ -7,6 +7,9 @@
  * psi_nlm = R_nl(r) * Y_lm(theta, phi), with *real* spherical harmonics, so
  * m > 0 carries cos(m phi), m < 0 sin(|m| phi). That gives the lobed textbook
  * orbitals rather than the axially symmetric |Y| of the complex form.
+ * sampler(n, l, m, true) draws from the complex eigenstate instead — same R,
+ * but |Y| with no phi dependence — which is the density to pair with advecting
+ * the cloud along the e^(i m phi) phase gradient (the Bohmian flow).
  *
  * Because the density separates as R(r)^2 * Y(theta,phi)^2, points are drawn in
  * two independent steps: the radius from a tabulated CDF of 4 pi r^2 R^2, the
@@ -71,12 +74,24 @@
     return pll;
   }
 
-  /** Real spherical harmonic Y_lm, cosTheta = z/r. */
-  function realY(l, m, cosTheta, phi) {
+  /**
+   * Angular amplitude whose square is the angular density. The real harmonic
+   * carries the cos/sin(m phi) lobes; `complex` asks for |Y| of the complex
+   * eigenstate instead, which drops the phi factor (that density is axially
+   * symmetric) but keeps the sqrt(2), so both modes share the same envelope
+   * maxY2 and the same overall scale.
+   */
+  function ampY(l, m, cosTheta, phi, complex) {
     if (m === 0) return nalp(l, 0, cosTheta);
     const am = Math.abs(m);
     const p = Math.SQRT2 * nalp(l, am, cosTheta);
+    if (complex) return p;
     return m > 0 ? p * Math.cos(am * phi) : p * Math.sin(am * phi);
+  }
+
+  /** Real spherical harmonic Y_lm, cosTheta = z/r. */
+  function realY(l, m, cosTheta, phi) {
+    return ampY(l, m, cosTheta, phi, false);
   }
 
   /** Radial part R_nl(r), r in Bohr radii, up to a constant. */
@@ -85,11 +100,12 @@
     return Math.exp(-0.5 * rho) * Math.pow(rho, l) * laguerre(n - l - 1, 2 * l + 1, rho);
   }
 
-  /** psi itself — the caller wants its sign, to tell the lobes apart. */
-  function psi(n, l, m, x, y, z) {
+  /** Signed amplitude whose square is |psi|^2 — the caller wants its sign, to
+   *  tell the lobes (real) or the theta-nodes (complex) apart. */
+  function psi(n, l, m, x, y, z, complex) {
     const r = Math.hypot(x, y, z);
     if (r < 1e-9) return l === 0 ? radial(n, l, 0) * realY(l, 0, 1, 0) : 0;
-    return radial(n, l, r) * realY(l, m, z / r, Math.atan2(y, x));
+    return radial(n, l, r) * ampY(l, m, z / r, Math.atan2(y, x), complex);
   }
 
   /** Clamp l and m into the range the physics allows: 0 <= l < n, |m| <= l. */
@@ -100,9 +116,11 @@
     return { n, l, m };
   }
 
-  function sampler(n, l, m) {
+  /** `complex` swaps the real harmonic for the complex eigenstate's |Y|. */
+  function sampler(n, l, m, complex) {
     const q = clampQuantum(n, l, m);
     n = q.n; l = q.l; m = q.m;
+    complex = !!complex;
 
     // --- radial CDF -------------------------------------------------------
     // The density has died off long before 4n^2 + 20 Bohr for every n we allow,
@@ -166,12 +184,13 @@
     function sample(out, off) {
       const r = sampleRadius();
 
-      // Uniform direction, kept with probability Y^2 / maxY^2.
+      // Uniform direction, kept with probability Y^2 / maxY^2. In complex mode
+      // phi never enters the test — every direction on the accepted ring wins.
       let cosTheta, phi;
       for (;;) {
         cosTheta = 2 * Math.random() - 1;
         phi = Math.random() * 2 * Math.PI;
-        const y = realY(l, m, cosTheta, phi);
+        const y = ampY(l, m, cosTheta, phi, complex);
         if (Math.random() * maxY2 <= y * y) break;
       }
 
@@ -182,13 +201,13 @@
     }
 
     return {
-      n, l, m,
+      n, l, m, complex,
       rOuter,
       /** Peak of |psi|^2 anywhere — the two factors max out independently. */
       maxDensity: maxR2 * maxY2,
       sample,
-      density(x, y, z) { const p = psi(n, l, m, x, y, z); return p * p; },
-      psi(x, y, z) { return psi(n, l, m, x, y, z); },
+      density(x, y, z) { const p = psi(n, l, m, x, y, z, complex); return p * p; },
+      psi(x, y, z) { return psi(n, l, m, x, y, z, complex); },
     };
   }
 
@@ -200,5 +219,5 @@
     return n + letter + (m === 0 ? '' : (m > 0 ? '+' : '-') + Math.abs(m));
   }
 
-  global.Orbital = { sampler, clampQuantum, laguerre, nalp, realY, radial, label };
+  global.Orbital = { sampler, clampQuantum, laguerre, nalp, realY, ampY, radial, label };
 })(window);

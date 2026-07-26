@@ -239,6 +239,7 @@
       sm.setRange(-sl.value, sl.value);
       const q = { n: sn.value, l: sl.value, m: sm.value };
       orbLabel.textContent = Orbital.label(q.n, q.l, q.m);
+      setMotionLabel();
       if (opts.onQuantum) opts.onQuantum(q);
     }
 
@@ -248,6 +249,30 @@
     const sl = intSlider('l  angular', 0, q0.n - 1, q0.l, pushQuantum);
     const sm = intSlider('m  magnetic', -q0.l, q0.l, q0.m, pushQuantum);
     orbLabel.textContent = Orbital.label(q0.n, q0.l, q0.m);
+
+    // --- motion -----------------------------------------------------------
+    //
+    // The complex eigenstate's e^{i m phi} phase drives a circulation about
+    // the vertical axis (the Bohmian velocity field, L_z = m hbar); the
+    // checkbox swaps the lobed real harmonic for that state and sets the
+    // cloud turning. m = 0 has no phase gradient and stays put either way.
+    const motionLabel = title('Motion', true);
+    const f0 = opts.flow || { on: false, speed: 1 };
+
+    const flowCheck = check('flow (complex ψ)', f0.on, (v) => {
+      setMotionLabel();
+      if (opts.onFlow) opts.onFlow({ on: v });
+    });
+
+    slider('speed', 0.05, 20, 1, f0.speed, (v) => {
+      if (opts.onFlow) opts.onFlow({ speed: v });
+    }, { log: true, fmt: (v) => v.toFixed(2) + '×' });
+
+    function setMotionLabel() {
+      motionLabel.textContent = !flowCheck.checked ? 'off'
+        : sm.value === 0 ? 'static' : 'Lz = ' + sm.value + 'ħ';
+    }
+    setMotionLabel();
 
     title('Rendering', true);
 
