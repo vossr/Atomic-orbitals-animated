@@ -1,7 +1,8 @@
 /*
- * orbital.js — hydrogen wavefunctions, and sampling points from |psi|^2.
+ * orbital.js — atomic wavefunctions, and sampling points from |psi|^2.
  *
- *   const s = Orbital.sampler(n, l, m);
+ *   const s = Orbital.sampler(n, l, m);        // hydrogen, exact
+ *   const s = Orbital.gtoSampler(shell, m);    // any atom's HF orbital, from basis.js
  *   s.sample(out, 0);            // writes x,y,z in Bohr radii
  *
  * psi_nlm = R_nl(r) * Y_lm(theta, phi), with *real* spherical harmonics, so
@@ -100,14 +101,6 @@
     return Math.exp(-0.5 * rho) * Math.pow(rho, l) * laguerre(n - l - 1, 2 * l + 1, rho);
   }
 
-  /** Signed amplitude whose square is |psi|^2 — the caller wants its sign, to
-   *  tell the lobes (real) or the theta-nodes (complex) apart. */
-  function psi(n, l, m, x, y, z, complex) {
-    const r = Math.hypot(x, y, z);
-    if (r < 1e-9) return l === 0 ? radial(n, l, 0) * realY(l, 0, 1, 0) : 0;
-    return radial(n, l, r) * ampY(l, m, z / r, Math.atan2(y, x), complex);
-  }
-
   /** Clamp l and m into the range the physics allows: 0 <= l < n, |m| <= l. */
   function clampQuantum(n, l, m) {
     n = Math.max(1, Math.round(n));
@@ -116,16 +109,16 @@
     return { n, l, m };
   }
 
-  /** `complex` swaps the real harmonic for the complex eigenstate's |Y|. */
-  function sampler(n, l, m, complex) {
-    const q = clampQuantum(n, l, m);
-    n = q.n; l = q.l; m = q.m;
-    complex = !!complex;
-
+  /**
+   * The sampling machinery over an arbitrary radial profile. Nothing in here
+   * assumes hydrogen — only that psi = R(r) Y_lm, which holds for atomic
+   * Hartree-Fock orbitals just as well — so the samplers below differ solely
+   * in the R they pass in. `rHi` bounds the radial grid and the density must
+   * be dead beyond it; `complex` swaps the real harmonic for the complex
+   * eigenstate's |Y|; `n` is only carried through for labelling.
+   */
+  function makeSampler(radialFn, rHi, n, l, m, complex) {
     // --- radial CDF -------------------------------------------------------
-    // The density has died off long before 4n^2 + 20 Bohr for every n we allow,
-    // so that is a safe upper bound to tabulate over.
-    const rHi = 4 * n * n + 20;
     const dr = rHi / RSTEPS;
     const rGrid = new Float64Array(RSTEPS + 1);
     const weight = new Float64Array(RSTEPS + 1);   // r^2 R^2, the radial density
@@ -134,7 +127,7 @@
     let maxR2 = 0;
     for (let i = 0; i <= RSTEPS; i++) {
       const r = i * dr;
-      const R = radial(n, l, r);
+      const R = radialFn(r);
       const R2 = R * R;
       if (R2 > maxR2) maxR2 = R2;
       rGrid[i] = r;
@@ -200,15 +193,84 @@
       out[off + 2] = r * cosTheta;
     }
 
+    /** Signed amplitude whose square is |psi|^2 — the caller wants its sign,
+     *  to tell the lobes (real) or the theta-nodes (complex) apart. */
+    function psiAt(x, y, z) {
+      const r = Math.hypot(x, y, z);
+      if (r < 1e-9) return l === 0 ? radialFn(0) * realY(0, 0, 1, 0) : 0;
+      return radialFn(r) * ampY(l, m, z / r, Math.atan2(y, x), complex);
+    }
+
     return {
       n, l, m, complex,
       rOuter,
       /** Peak of |psi|^2 anywhere — the two factors max out independently. */
       maxDensity: maxR2 * maxY2,
       sample,
-      density(x, y, z) { const p = psi(n, l, m, x, y, z, complex); return p * p; },
-      psi(x, y, z) { return psi(n, l, m, x, y, z, complex); },
+      density(x, y, z) { const p = psiAt(x, y, z); return p * p; },
+      psi: psiAt,
     };
+  }
+
+  /** Hydrogen eigenstate sampler — the exact analytic solutions. */
+  function sampler(n, l, m, complex) {
+    const q = clampQuantum(n, l, m);
+    // The density has died off long before 4n^2 + 20 Bohr for every n we
+    // allow, so that is a safe upper bound to tabulate over.
+    return makeSampler((r) => radial(q.n, q.l, r), 4 * q.n * q.n + 20,
+                       q.n, q.l, q.m, !!complex);
+  }
+
+  /**
+   * Sampler over a contracted-Gaussian orbital, as Basis.parse() yields them:
+   * { n, l, exponents, coeffs }, exponents in Bohr^-2 and coefficients over
+   * *normalized* primitives (the Basis Set Exchange convention). So
+   *
+   *   R(r) = r^l sum_i c_i N_i exp(-a_i r^2),  N_i ∝ a_i^((2l+3)/4),
+   *
+   * where only the ratios of the N_i matter, like everything else here.
+   */
+  function gtoSampler(orb, m, complex) {
+    if (!orb) throw new Error('no such orbital in this basis');
+    const l = orb.l;
+    m = Math.min(l, Math.max(-l, Math.round(m)));
+
+    const a = orb.exponents;
+    const w = new Float64Array(a.length);
+    for (let i = 0; i < a.length; i++) {
+      w[i] = orb.coeffs[i] * Math.pow(a[i], (2 * l + 3) / 4);
+    }
+    function radialFn(r) {
+      const r2 = r * r;
+      let s = 0;
+      for (let i = 0; i < a.length; i++) s += w[i] * Math.exp(-a[i] * r2);
+      return s * Math.pow(r, l);
+    }
+
+    // One uniform grid has to resolve whatever this orbital is — a Kr 1s is
+    // dead by half a Bohr, a Li 2s reaches past 25 — so sweep a log grid for
+    // where the radial density falls nine decades below its peak, and only
+    // tabulate out to there.
+    let aMin = Infinity;
+    for (let i = 0; i < a.length; i++) if (a[i] < aMin) aMin = a[i];
+    const rFar = Math.sqrt(30 / aMin) + 1;  // even the most diffuse primitive is dead here
+    const probe = new Float64Array(513);
+    let peak = 0;
+    for (let i = 0; i <= 512; i++) {
+      const r = 1e-3 * Math.pow(rFar * 1e3, i / 512);
+      const R = radialFn(r);
+      probe[i] = r * r * R * R;
+      if (probe[i] > peak) peak = probe[i];
+    }
+    let rHi = rFar;
+    for (let i = 512; i >= 0; i--) {
+      if (probe[i] > peak * 1e-9) {
+        rHi = Math.min(rFar, 1e-3 * Math.pow(rFar * 1e3, i / 512) * 1.15);
+        break;
+      }
+    }
+
+    return makeSampler(radialFn, rHi, orb.n, l, m, !!complex);
   }
 
   /** Spectroscopic name, e.g. (3, 2, -1) -> "3d". Empty past l = 5, which has no
@@ -219,5 +281,5 @@
     return n + letter + (m === 0 ? '' : (m > 0 ? '+' : '-') + Math.abs(m));
   }
 
-  global.Orbital = { sampler, clampQuantum, laguerre, nalp, realY, ampY, radial, label };
+  global.Orbital = { sampler, gtoSampler, clampQuantum, laguerre, nalp, realY, ampY, radial, label };
 })(window);

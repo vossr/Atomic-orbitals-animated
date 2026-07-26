@@ -95,6 +95,16 @@
   }
   .aoui input[type=number]::-webkit-inner-spin-button,
   .aoui input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+  .aoui select {
+    width: 100%; padding: 1px 2px; color: #dfe6ef; font: inherit;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 3px;
+    cursor: pointer;
+  }
+  .aoui select:focus { outline: none; border-color: rgba(116, 168, 255, 0.5); }
+  /* The popup list ignores the panel styling and would come out black-on-white
+     in some browsers; pin its own colors. */
+  .aoui select option { background: #14181f; color: #dfe6ef; }
   `;
 
   function el(tag, cls, parent) {
@@ -202,9 +212,12 @@
 
       // The editable ceiling, capped at maxCeil (past which |psi|^2 overflows a
       // double as the radial CDF is built). Lowering it below n drags n down too.
+      // Exposed as ceilEl/getCeil so the atom dropdown can stash it away — a
+      // basis-set atom's shells end where they end, no ceiling to edit.
       if (maxCeil) {
-        el('span', 'aoui-int-sep', right).textContent = '/';
-        const cap = el('input', null, right);
+        const wrap = el('span', 'aoui-int-right', right);
+        el('span', 'aoui-int-sep', wrap).textContent = '/';
+        const cap = el('input', null, wrap);
         cap.type = 'number';
         cap.min = min; cap.max = maxCeil; cap.step = 1;
         cap.value = max;
@@ -217,6 +230,8 @@
           self.setRange(min, hi);
           onInput();
         });
+        self.ceilEl = wrap;
+        self.getCeil = () => last;
       }
 
       input.addEventListener('input', () => { show(); onInput(); });
@@ -233,12 +248,67 @@
     const orbLabel = title('Quantums');
     const q0 = opts.quantum || { n: 3, l: 1, m: 0 };
 
+    // --- atom ---------------------------------------------------------------
+    //
+    // Hydrogen stays on the exact analytic eigenstates with its open-ended n;
+    // every other atom offers the occupied Hartree-Fock orbitals its basis-set
+    // table carries, so n and l are pinned to shells the atom actually has.
+    // (Those shells are gapless — 4p occupied implies 4s, 3d, ... are too — so
+    // plain nested slider ranges cover exactly the valid set.)
+    const elements = opts.elements || [];
+    let elem = null;                        // null = analytic hydrogen
+    let atomNote = null;
+
+    if (elements.length) {
+      const row = el('div', 'aoui-row', panel);
+      const label = el('label', null, row);
+      label.appendChild(document.createTextNode('atom'));
+      atomNote = el('i', null, label);
+      atomNote.textContent = 'exact ψ';
+      const sel = el('select', null, row);
+      const h = el('option', null, sel);
+      h.value = '';
+      h.textContent = '1 H';
+      for (const e of elements) {
+        if (e.Z === 1) continue;            // analytic H beats its own basis fit
+        const o = el('option', null, sel);
+        o.value = e.symbol;
+        o.textContent = e.Z + ' ' + e.symbol;
+      }
+      sel.addEventListener('change', () => {
+        elem = null;
+        for (const e of elements) if (e.symbol === sel.value) elem = e;
+        if (opts.onElement) opts.onElement(elem);
+        applyAtomRanges();
+        pushQuantum();
+      });
+    }
+
+    function elemLMax(n) {
+      let hi = 0;
+      for (const s of elem.shells) if (s.n === n && s.l > hi) hi = s.l;
+      return hi;
+    }
+
+    function applyAtomRanges() {
+      atomNote.textContent = elem ? 'HF · cc-pVDZ' : 'exact ψ';
+      if (elem) {
+        let nHi = 1;
+        for (const s of elem.shells) if (s.n > nHi) nHi = s.n;
+        if (sn.ceilEl) sn.ceilEl.style.display = 'none';
+        sn.setRange(1, nHi);
+      } else {
+        if (sn.ceilEl) sn.ceilEl.style.display = '';
+        sn.setRange(2, sn.getCeil());
+      }
+    }
+
     function pushQuantum() {
       // Order matters: n bounds l, and l bounds m.
-      sl.setRange(0, sn.value - 1);
+      sl.setRange(0, elem ? elemLMax(sn.value) : sn.value - 1);
       sm.setRange(-sl.value, sl.value);
       const q = { n: sn.value, l: sl.value, m: sm.value };
-      orbLabel.textContent = Orbital.label(q.n, q.l, q.m);
+      orbLabel.textContent = (elem ? elem.symbol + ' ' : '') + Orbital.label(q.n, q.l, q.m);
       setMotionLabel();
       if (opts.onQuantum) opts.onQuantum(q);
     }

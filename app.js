@@ -1,7 +1,9 @@
 /*
- * app.js — the scene: samples a hydrogen orbital into a ball cloud, wires up
- * the UI. Rendering lives in atomic_orbitals.js, controls in ui.js, the
- * wavefunction maths in orbital.js.
+ * app.js — the scene: samples an orbital into a ball cloud and wires up the
+ * UI. Hydrogen uses the exact analytic eigenstates; every other atom shows
+ * its occupied Hartree-Fock orbitals out of the cc-pVDZ basis-set table.
+ * Rendering lives in atomic_orbitals.js, controls in ui.js, the wavefunction
+ * maths in orbital.js, the basis-set parsing in basis.js.
  *
  * With flow on, the cloud is sampled from the *complex* eigenstate and each
  * ball rides the Bohmian velocity field v = (hbar/m_e) grad(arg psi). The
@@ -104,8 +106,12 @@
    * y and z would do it too, but it mirrors the scene and would flip the
    * handedness of the m < 0 lobes.
    */
-  function buildCloud(count, q, palette, flow) {
-    const s = Orbital.sampler(q.n, q.l, q.m, flow.on);
+  function buildCloud(count, q, palette, flow, elem) {
+    // The two samplers return the same interface, and the flow works on both:
+    // a complex m != 0 eigenstate's phase is e^(i m phi) whatever R(r) is.
+    const s = elem
+      ? Orbital.gtoSampler(elem.shells.find((sh) => sh.n === q.n && sh.l === q.l), q.m, flow.on)
+      : Orbital.sampler(q.n, q.l, q.m, flow.on);
 
     const positions = new Float32Array(count * 3);
     const radii = new Float32Array(count);
@@ -159,17 +165,18 @@
     return cloud;
   }
 
-  function main() {
+  function main(elements) {
     const view = AtomicOrbitals.create(document.getElementById('gl'));
 
     let count = N0;
     let q = Orbital.clampQuantum(Q0.n, Q0.l, Q0.m);
+    let element = null;                    // null = hydrogen, from Orbital.sampler
     const palette = Object.assign({}, P0);
     const flow = Object.assign({}, F0);
     let cloud;
 
     function rebuild() {
-      cloud = buildCloud(count, q, palette, flow);   // old buffers fall out of scope
+      cloud = buildCloud(count, q, palette, flow, element);   // old buffers fall out of scope
       view.setSpheres(cloud);
     }
 
@@ -226,8 +233,12 @@
 
     AtomicOrbitalsUI.attach(view, {
       quantum: q,
+      elements: elements,
       palette: palette,
       flow: flow,
+      // Switching atoms only stores the element: the UI re-clamps n/l/m to the
+      // new atom's shells and follows up with onQuantum, which rebuilds once.
+      onElement: (e) => { element = e; },
       onCount: (v) => { count = v; rebuild(); },
       onQuantum: (next) => { q = next; rebuild(); },
       onPalette: (next) => { Object.assign(palette, next); repaint(); },
@@ -242,14 +253,27 @@
     view.start();
   }
 
-  try {
-    main();
-  } catch (e) {
-    // Mostly catches WebGL2 being unavailable or a shader failing to compile,
-    // either of which otherwise just leaves a blank canvas.
-    const box = document.getElementById('error');
-    box.style.display = 'grid';
-    box.textContent = e.message;
-    throw e;
-  }
+  // The basis-set table rides in a separate JSON, straight off Basis Set
+  // Exchange. When the fetch fails — typically an unserved file:// open, which
+  // blocks it — the app still runs, hydrogen-only.
+  fetch('./cc-pVDZ.json')
+    .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
+    .then((json) => Basis.parse(json))
+    .catch((err) => {
+      console.warn('cc-pVDZ.json unavailable (' + err.message +
+        ') — hydrogen only. Serve over http:// to get the other atoms.');
+      return [];
+    })
+    .then((elements) => {
+      try {
+        main(elements);
+      } catch (e) {
+        // Mostly catches WebGL2 being unavailable or a shader failing to
+        // compile, either of which otherwise just leaves a blank canvas.
+        const box = document.getElementById('error');
+        box.style.display = 'grid';
+        box.textContent = e.message;
+        throw e;
+      }
+    });
 })();
