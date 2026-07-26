@@ -427,10 +427,10 @@
 
     const state = {
       count: 0,
-      yaw: 0.6,
-      pitch: 0.3,
-      dist: 6,
-      autoSpin: 0.15,      // rad/s, disabled once the user drags
+      yaw: -Math.PI / 4,    // 90 degrees
+      pitch: Math.PI / 4,  // 45 degrees, looking down
+      dist: 1, // not affected here
+      autoSpin: 0,         // rad/s, default idle orbit off
       superSample: 1,      // >1 renders the G-buffer larger and downsamples
       rough: 0.4,          // specular spread, 0 = mirror glint, 1 = matte
       background: [0.043, 0.051, 0.071],   // sRGB, matching the page behind us

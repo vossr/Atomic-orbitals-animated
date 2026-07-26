@@ -20,9 +20,9 @@
 
   const N0 = 300000;          // starting ball count; the UI slider changes it
   const R_WORLD = 2.0;        // the cloud is scaled to roughly this radius
-  const Q0 = { n: 5, l: 3, m: 1 };
+  const Q0 = { n: 7, l: 3, m: 1 };
   const P0 = { solid: true, h: 100, s: 1, l: 0.6 };
-  const F0 = { on: true, speed: 1 };
+  const F0 = { on: true, speed: 0.30 };
 
   // Flow pacing. True omega = m/rho^2 in atomic units spans decades across n
   // (rho ~ n^2 Bohr), so time is rescaled per orbital: the ball at the cloud's
@@ -208,7 +208,7 @@
 
     rebuild();
 
-    view.setCamera({ dist: 8 });
+    view.setCamera({ dist: 4.8 });
     // Occlusion radius is in world units — roughly the size of the cavities you
     // want darkened, not the size of a ball.
     view.setAO({ radius: 2, intensity: 4, bias: 0.05 });
@@ -220,7 +220,7 @@
     // Edges and gizmo start hidden — the box is there to be turned on from the
     // panel, not to frame the orbital by default.
     view.setClip({
-      center: [0.6, 0.6, 0.6], size: [1.2, 1.2, 1.2],
+      center: [1.2, 1.2, 1.2], size: [2.4, 2.4, 2.4],
       showEdges: false, showGizmo: false,
     });
 
