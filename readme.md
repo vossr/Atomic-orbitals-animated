@@ -1,9 +1,10 @@
 #### Try here: https://vossr.github.io/Atomic-orbitals-animated/
 
+<p float="left">
 <img src="img/1.gif" width="270" height="auto"/>  
 <img src="img/2.gif" width="270" height="auto"/>  
 <img src="img/3.gif" width="270" height="auto"/>  
-
+</p>
 
 using bohmian trajectories to visualize the wavefunctions of atomic orbitals
 only hydrogen (and other one-electron ions) has exact analytic solutions
