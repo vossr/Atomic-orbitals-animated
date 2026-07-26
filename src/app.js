@@ -218,7 +218,7 @@
     view.setCamera({ dist: 4.8 });
     // Occlusion radius is in world units — roughly the size of the cavities you
     // want darkened, not the size of a ball.
-    view.setAO({ radius: 2, intensity: 4, bias: 0.05 });
+    view.setAO({ radius: 2, intensity: 3, bias: 0.05 });
     view.setQuality({ superSample: 2 });
     view.setMaterial({ roughness: 1 });
     view.setBackground([1, 1, 1]);
@@ -256,7 +256,7 @@
   // The basis-set table rides in a separate JSON, straight off Basis Set
   // Exchange. When the fetch fails — typically an unserved file:// open, which
   // blocks it — the app still runs, hydrogen-only.
-  fetch('./cc-pVDZ.json')
+  fetch('./src/cc-pVDZ.json')
     .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
     .then((json) => Basis.parse(json))
     .catch((err) => {
